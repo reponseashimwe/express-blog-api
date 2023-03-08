@@ -1,5 +1,6 @@
 const express = require('express');
 const db = require('./model');
+const {User, Post, Comment} = require('../models/index');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
@@ -24,30 +25,8 @@ const storage = multer.diskStorage({
 
 const photos = multer({storage: storage});
 
-db.setable('users');
 
 const PORT = 4000;
-
-const users = [
-    {
-        id: 1,
-        name: 'Reponse',
-        email: 'rpns@gmail.com',
-        password: '1234'
-    },
-    {
-        id: 2,
-        name: 'Reponse',
-        email: 'rpns@gmail.com',
-        password: '1234'
-    },
-    {
-        id: 3,
-        name: 'Reponse',
-        email: 'rpns@gmail.com',
-        password: '1234'
-    },
-]
 
 app.listen(PORT, () => console.log('Running the server'))
 
@@ -64,7 +43,40 @@ function authenticateToken(req, res, next) {
         console.log(err);
         res.json({msg: "Invalid token"});
     }
-  }
+}
+
+const exist = (table) => {
+    return async (req, res, next) => {
+        var data = null;
+        req.table = table;
+        if (table == 'post') {
+             data = await Post.findByPk(req.params.id);
+        } else if (table == 'comment') {
+             data = await Comment.findByPk(req.params.id);
+        }
+        if (data==null) {
+            res.status(400).json({status: 'error', 'body': `${table} doesn't exist`});
+        } else {
+            next();
+        }
+    }
+}
+
+const is_author = (table) => {
+    return async (req, res, next) => {
+        var data = null;
+        if (table == 'post') {
+             data = await Post.findByPk(req.params.id);
+        } else if (table == 'comment') {
+             data = await Comment.findByPk(req.params.id);
+        }
+        if (data.user_id != req.requesting_user) {
+            res.status(403).json({status: 'error', 'body': `You are not the author`});
+        } else {
+            next();
+        }
+    }
+}
 
 app.get('/users', authenticateToken, async (req, res) => {
     const users = await db.get();
@@ -74,14 +86,16 @@ app.get('/users', authenticateToken, async (req, res) => {
 app.post('/register', async (req, res) => {
     const name = req.body.name, password = req.body.password, email = req.body.email;
     if (name && password && email) {
-        const existing = await db.exists(`email='${email}'`);
-        if (existing) {
+        const existing = await User.findOne({where: {email}});
+        if (existing != null) {
             return res.status(400).json({'status': 'error','body': 'Email already taken'});
         } else {
-            db.setable('users');
+            
             const pass = await bcrypt.hash(password, 10);
-            db.insert("name, email, password", `'${name}', '${email}', '${pass}'`);
-            const user = await db.exists(`email='${email}'`);
+            
+            const newUser = await User.create({name, email, password:pass});
+            const user = await User.findOne({where: {email}});
+
             const token = jwt.sign({id: user.id}, API_TOKEN);
             return res.status(201).json({
                 'status': 'success', 
@@ -99,12 +113,10 @@ app.post('/register', async (req, res) => {
 });
 
 app.post('/login', async (req, res) => {
-    db.setable('users');
-
     const password = req.body.password, email = req.body.email;
     if (password && email) {
-        const existing = await db.exists(`email='${email}'`);
-        if (!existing) {
+        const existing = await User.findOne({where: {email}});
+        if (existing == null) {
             return res.status(400).json({'status': 'error','body': 'User not found'});
         } else {
             const pass = await bcrypt.compare(password, existing.password);
@@ -126,12 +138,16 @@ app.post('/login', async (req, res) => {
     } else {
         return res.status(400).json({'status': 'error', 'body': 'Include email and password'});
     }
-    res.status(400).json({'msg': 'Random error'});
 });
 
+app.post('/logout', authenticateToken, (req, res) => {
+    res.cookie('jwt', '', {maxAge: 1});
+    res.json({'status': 'success', body: 'Logged out'});
+});
+
+
 app.get('/posts', authenticateToken, async (req, res) => {
-    db.setable('posts');
-    const posts = await db.get();
+    const posts = await Post.findAll({order:[['createdAt', 'DESC']]});
     res.json({data: posts});
 });
 
@@ -139,62 +155,52 @@ app.get('/posts', authenticateToken, async (req, res) => {
 app.post('/posts', authenticateToken, photos.single('photo'), async (req, res) => {
     db.setable('posts');
     if (req.body.title && req.body.content && req.file) {
-        const insert = await db.insert('title, content, photo, user_id', `'${req.body.title}', '${req.body.content}', '${req.file.filename}', '${req.requesting_user}'`);
-        const post = await db.latest();
+        const insert = await Post.create({title: req.body.title, content: req.body.content, photo: req.file.filename, user_id: req.requesting_user});
+        const post = await Post.findOne({order:[['createdAt', 'DESC']]});
         res.json({status: 'success', body: 'Post created',data: post});
     } else {
         return res.status(400).json({'status': 'error', 'body': 'Include title content and file'});
     }
 });
 
-app.get('/posts/:id', authenticateToken, async (req, res) => {
-    db.setable('posts');
-    const post = await db.exists(`id='${req.params.id}'`);
-    db.setable('comments');
-    const comments = await db.where(`post_id='${req.params.id}'`);
-    post.comments = comments;
-
-    res.json({status: 'success',body: post});
+app.get('/posts/:id', authenticateToken, exist('post'), async (req, res) => {
+    const post = await Post.findOne({where: {id: req.params.id}, include: Comment});
+    res.json({status: 'success', body: post});
 });
 
-app.put('/posts/:id', authenticateToken, photos.single('photo'), async (req, res) => {
+app.put('/posts/:id', authenticateToken, exist('post'), is_author('post'), photos.single('photo'), async (req, res) => {
     db.setable('posts');
     if (req.body.title && req.body.content && req.file) {
-        const post = await db.update(`content= '${req.body.content}', title= '${req.body.title}', photo= '${req.file.filename}'`, req.params.id);
-        db.setable('comments');
-        const comments = await db.where(`post_id='${req.params.id}'`);
-        post.comments = comments;
+        const update = await Post.update({title: req.body.title, content: req.body.content, photo: req.file.filename, user_id: req.requesting_user}, {where: {id: req.params.id}});
+        const post = await Post.findOne({where: {id: req.params.id}, include: Comment});
         res.json({status: 'success', body: 'Post updated',data: post});
     } else {
         return res.status(400).json({'status': 'error', 'body': 'Include title content and file'});
     }
 });
 
-app.delete('/posts/:id', authenticateToken, async (req, res) => {
-    db.setable('posts');
-    const post = await db.delete(req.params.id);
+app.delete('/posts/:id', authenticateToken, exist('post'), is_author('post'), async (req, res) => {
+    const post = await Post.destroy({where: req.params.id});
 
     res.json({status: 'success',body: 'Post deleted', id: req.params.id});
 });
 
-app.post('/posts/:id/comment', authenticateToken, async (req, res) => {
-    db.setable('comments');
-    const insert = await db.insert('comment, user_id, post_id', `'${req.body.comment}', '${req.requesting_user}', '${req.params.id}'`);
-    const comment = await db.latest();
+app.post('/posts/:id/comment', authenticateToken, exist('post'), async (req, res) => {
+    console.log(req.body.comment);
+    const insert = await Comment.create({comment: req.body.comment, user_id: req.requesting_user, post_id: req.params.id});
+    const comment = await Comment.findOne({order: [['id', 'DESC']]});
 
     res.json({status: 'success',body: 'Comment created', data: comment});
 });
 
-app.put('/comments/:id', authenticateToken, async (req, res) => {
-    db.setable('comments');
-    const comment = await db.update(`comment= '${req.body.comment}'`, req.params.id);
-
+app.put('/comments/:id', authenticateToken, exist('comment'), is_author('comment'), async (req, res) => {
+    const update = await Comment.update({comment: req.body.comment}, {where: {id: req.params.id}});
+    const comment = await Comment.findOne({where: {id: req.params.id}});
     res.json({status: 'success',body: 'Comment updated', data: comment});
 });
 
-app.delete('/comments/:id', authenticateToken, async (req, res) => {
-    db.setable('comments');
-    const comment = await db.delete(req.params.id);
+app.delete('/comments/:id', authenticateToken, exist('comment'), is_author('comment'), async (req, res) => {
+    const comment = await Comment.destroy({where: {id: req.params.id}});
 
     res.json({status: 'success',body: 'Comment deleted', id: req.params.id});
 });
