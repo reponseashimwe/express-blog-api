@@ -1,8 +1,18 @@
-const db = require('mysql2');
+const Sequelize = require('sequelize');
 
-module.exports = db.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'etite_express_blog'
+
+
+
+// module.exports = db.createConnection({
+//     host: 'localhost',
+//     user: 'root',
+//     password: '',
+//     database: 'etite_express_blog'
+// });
+
+const sequelize = new Sequelize('projects_sequelize', 'root', '', {
+    dialect: 'mysql',
+    host: 'localhost'
 });
+
+module.exports = sequelize;
