@@ -180,7 +180,8 @@ app.put('/posts/:id', authenticateToken, exist('post'), is_author('post'), photo
 });
 
 app.delete('/posts/:id', authenticateToken, exist('post'), is_author('post'), async (req, res) => {
-    const post = await Post.destroy({where: req.params.id});
+    console.log(req.params.id);
+    const post = await Post.destroy({where: {id: req.params.id}});
 
     res.json({status: 'success',body: 'Post deleted', id: req.params.id});
 });
